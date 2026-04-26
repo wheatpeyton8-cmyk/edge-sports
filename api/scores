@@ -1,0 +1,75 @@
+// api/scores.js
+// Vercel serverless function — proxies ESPN score API with no CORS issues
+
+export default async function handler(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  if (req.method === 'OPTIONS') { res.status(200).end(); return; }
+
+  const { sport, dates } = req.query;
+  if (!sport || !dates) {
+    return res.status(400).json({ error: 'Missing sport or dates param' });
+  }
+
+  const ENDPOINTS = {
+    nba: `https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard`,
+    mlb: `https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard`,
+    nhl: `https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard`,
+    nfl: `https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard`,
+  };
+
+  const base = ENDPOINTS[sport.toLowerCase()];
+  if (!base) return res.status(400).json({ error: `Unknown sport: ${sport}` });
+
+  try {
+    const url = `${base}?dates=${dates}&limit=50`;
+    const espnRes = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0',
+        'Accept': 'application/json',
+      }
+    });
+
+    if (!espnRes.ok) {
+      return res.status(espnRes.status).json({ error: `ESPN returned ${espnRes.status}` });
+    }
+
+    const data = await espnRes.json();
+
+    // Parse into clean game objects
+    const games = (data.events || []).map(e => {
+      const comp = e.competitions?.[0];
+      const home = comp?.competitors?.find(c => c.homeAway === 'home');
+      const away = comp?.competitors?.find(c => c.homeAway === 'away');
+      const completed = comp?.status?.type?.completed || false;
+      const statusName = comp?.status?.type?.shortDetail || comp?.status?.type?.name || '';
+
+      return {
+        id: e.id,
+        name: e.name,
+        date: e.date,
+        completed,
+        status: statusName,
+        homeTeam: home?.team?.displayName || '',
+        homeShort: home?.team?.shortDisplayName || '',
+        homeAbbr: home?.team?.abbreviation || '',
+        homeScore: parseInt(home?.score || '0'),
+        awayTeam: away?.team?.displayName || '',
+        awayShort: away?.team?.shortDisplayName || '',
+        awayAbbr: away?.team?.abbreviation || '',
+        awayScore: parseInt(away?.score || '0'),
+      };
+    });
+
+    return res.status(200).json({
+      sport,
+      dates,
+      count: games.length,
+      completed: games.filter(g => g.completed).length,
+      games,
+    });
+
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
